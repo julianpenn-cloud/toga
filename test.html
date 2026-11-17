@@ -49,6 +49,7 @@
 // ---------------------------------------------------------------- harness
 const out = document.getElementById("out");
 const res = [];
+let t0 = 0;
 let suite = "";
 function group(name) { suite = name; const h = document.createElement("div"); h.className = "suite"; h.textContent = name; out.appendChild(h); }
 function test(name, fn) {
@@ -70,11 +71,11 @@ function run() {
   const app = frame.contentWindow;
   const A = app.TOGA;                              // the app's published test surface
   const doc = frame.contentDocument;
-  const t0 = performance.now();
+  t0 = performance.now();
 
   // don't disturb whatever the reader had stored
   const saved = {};
-  for (const k of ["toga.mode", "toga.region", "toga.wx", "toga.seen"]) saved[k] = app.localStorage.getItem(k);
+  for (const k of ["toga.region", "toga.wx", "toga.seen"]) saved[k] = app.localStorage.getItem(k);
 
   const DAY = (y, m, d) => new Date(y, m, d);
   const SPAN = 730;
@@ -192,9 +193,6 @@ function run() {
   test("every palette color has a valid hex and a team", () => {
     for (const c of A.PALETTE) { ok(/^#[0-9a-f]{6}$/i.test(c.hex), c.label + " hex " + c.hex); ok(c.team, c.label + " has no team"); }
   });
-  test("every trouser has a valid hex", () => {
-    for (const b of A.BOTTOMS) ok(/^#[0-9a-f]{6}$/i.test(b.hex), b.label + " hex " + b.hex);
-  });
   test("every palette color has verses for each season it can actually appear in", () => {
     const coarseOf = m => (m <= 1 || m === 11) ? "winter" : m <= 4 ? "spring" : m <= 7 ? "summer" : "autumn";
     for (const c of A.PALETTE) {
@@ -234,6 +232,18 @@ function run() {
 
   // ---------------------------------------------------------------- brand
   group("brand · classic wordmark, independent of any CDN");
+  test("the build number is shown beside the wordmark and in the footer", () => {
+    // One number, one place in the source. It renders in both spots, and it is also the
+    // service worker's cache name (checked after this run, since that needs a fetch), so a
+    // person can read the page and know which build their browser actually cached.
+    eq(A.VERSION, doc.getElementById("hdrVer").textContent, "the header does not show the build number");
+    eq(A.VERSION, doc.getElementById("ftrVer").textContent, "the footer does not show the build number");
+    ok(/^v\d+$/.test(A.VERSION), "the build number is not v<digits>: " + A.VERSION);
+    for (const id of ["hdrVer", "ftrVer"]) {
+      const box = doc.getElementById(id).getBoundingClientRect();
+      ok(box.width > 0 && box.height > 0, id + " is in the page but not visible");
+    }
+  });
   test("the wordmark is set in the inlined face, and it loaded", () => {
     const wm = doc.querySelector(".wordmark");
     ok(wm, "no wordmark in the page");
@@ -528,17 +538,16 @@ function run() {
     const toHex = s => "#" + s.match(/\d+/g).slice(0, 3)
       .map(v => (+v).toString(16).padStart(2, "0")).join("");
     const card = toHex(app.getComputedStyle(sw).backgroundColor);
-    const fills = [...sw.querySelectorAll(".hero-pair .garment path")]
-      .map(p => p.getAttribute("fill")).filter(f => /^#[0-9a-f]{6}$/i.test(f || ""));
-    ok(fills.length >= 2, "the hero should show the day's garment plus its companion, got " + fills.join(","));
-    // every garment wears a real palette colour, and the shade list names each one
-    const known = A.PALETTE.concat(A.BOTTOMS);
+    // the top wears the day's colour as the ground of its pattern, and the line below the
+    // garment names the shades that count
+    const day = A.byLabel(doc.getElementById("swName").textContent.trim());
+    ok(day, "the hero does not name a palette colour");
+    eq((sw.querySelector("#topPat rect").getAttribute("fill") || "").toLowerCase(), day.hex.toLowerCase(),
+       "the top's pattern is not grounded in the day's colour");
+    eq(sw.querySelectorAll(".hero-pair .garment").length, 1, "the hero should show the day's top and nothing else");
     const shades = doc.getElementById("fitShades").textContent;
-    for (const f of fills) {
-      const c = known.find(k => k.hex.toLowerCase() === f.toLowerCase());
-      ok(c, "a garment is wearing a colour that is not in the palette: " + f);
-      if (c) ok(shades.includes(c.label), "the shade list omits " + c.label);
-    }
+    for (const alias of day.qualifies.split(",").slice(0, 2))
+      ok(shades.includes(alias.trim()), "the shade list omits one of the colour's own names: " + alias);
     // and the hero's own text is ink on that card, cleared at every palette colour, because
     // the glow lays a tint of the day over it
     const glow = hx => { const c = A.hexRGB(hx), k = A.hexRGB(card);
@@ -579,17 +588,53 @@ function run() {
     const sw = doc.getElementById("swatch");
     ok(sw.scrollWidth <= sw.clientWidth + 1, "the hero's content overflows the card");
   });
-  test('the options are joined by an "or", and only when there are two', () => {
-    // Three garments in a row read as three things to wear. The separator states that the
-    // pair is a choice - and monochrome weeks return a one-item pair, which must not grow one.
-    for (const mode of ["top", "bottom"]) {
-      const d = new Date(2026, 8, 21), f = A.outfitFor(d, A.colorForDate(d), mode);
-      A.renderHero(d);
-      const group = [...doc.querySelectorAll("#heroPair .pg")][1];
-      const ors = group.querySelectorAll(".or").length;
-      const gs = group.querySelectorAll(".garment").length;
-      eq(ors, gs > 1 ? gs - 1 : 0, "separators should be one fewer than the options (" + gs + " garments)");
+  test("the hero shows one top, and nothing to toggle or choose between", () => {
+    A.renderHero(new Date(2026, 8, 21));
+    eq(doc.querySelectorAll("#heroPair .garment").length, 1, "expected a single garment");
+    eq(doc.querySelectorAll("#heroPair .or").length, 0, "there is nothing to choose between");
+    ok(!doc.getElementById("modeBottom") && !doc.querySelector(".fit-btn"), "the colour-on-bottom toggle is still on the page");
+    eq(doc.querySelectorAll("#heroPair .pg-label, #heroPair .pg").length, 0, "the garment still carries a caption");
+    eq(doc.querySelector("#heroPair .hero-garment path").getAttribute("fill"), "url(#topPat)", "the top should wear the day's pattern");
+    eq(doc.querySelectorAll("#topPat").length, 1, "exactly one pattern definition");
+  });
+  test("every control is a thumb-sized target with a visible focus ring", () => {
+    // Measured on a phone: six of eight controls were under 44px and three showed no focus
+    // indicator at all. Sizes are checked on the real elements; the ring is checked as a
+    // rule (and live, when this frame can take focus) and for contrast on every paper.
+    const sheets = ["settings"].map(id => doc.getElementById(id));
+    sheets.forEach(sh => sh.classList.add("open"));
+    const controls = [...doc.querySelectorAll("button, a[href], summary, input")].filter(e => e.getClientRects().length);
+    ok(controls.length >= 8, "expected the page's controls, found " + controls.length);
+    const bad = [];
+    app.focus();
+    for (const e of controls) {
+      const b = e.getBoundingClientRect(), name = e.id || e.dataset.label || e.className || e.tagName;
+      if (b.height < 44 || b.width < 44) bad.push(name + " is " + Math.round(b.width) + "x" + Math.round(b.height));
+      e.focus();
+      if (!doc.hasFocus() || !e.matches(":focus-visible")) continue;
+      const cs = app.getComputedStyle(e);
+      if (cs.outlineStyle === "none" || parseFloat(cs.outlineWidth) < 2) bad.push(name + " shows no focus ring");
     }
+    sheets.forEach(sh => sh.classList.remove("open"));
+    eq(bad.length, 0, bad.slice(0, 6).join("; "));
+    let ring = null; const killers = [];
+    for (const sh of doc.styleSheets) {
+      let rules; try { rules = sh.cssRules; } catch (e) { continue; }       // the font sheet is cross-origin
+      for (const r of rules) {
+        if (!r.style) continue;
+        if (r.selectorText === ":focus-visible") ring = r.style;
+        else if (r.style.outlineStyle === "none" || /^0/.test(r.style.outlineWidth)) killers.push(r.selectorText);
+      }
+    }
+    ok(ring && ring.outlineStyle === "solid" && parseFloat(ring.outlineWidth) >= 2, "no global :focus-visible ring");
+    eq(killers.length, 0, "these rules remove the focus ring: " + killers.join(", "));
+    const cssVar = n => app.getComputedStyle(doc.documentElement).getPropertyValue(n).trim();
+    for (const c of A.PALETTE) {
+      A.paintPage(c.hex);
+      for (const bg of ["--card", "--paper"])
+        ok(ratio(cssVar("--day-deep"), cssVar(bg)) >= 3, "the focus ring is faint on a " + c.label + " day (" + bg + ")");
+    }
+    A.renderAll();
   });
   test("a theme week is named once, by the banner", () => {
     // The banner and the verse both used to say "<emoji> <name>. <note>." - the same
@@ -609,109 +654,226 @@ function run() {
     }
     ok(found > 0, "no theme week found in two years - this test proved nothing");
   });
-  group("outfit · the pairing rules");
-  const trousers = new Set(A.BOTTOMS.map(b => b.label));
-  const pieces = f => [f.hero].concat(f.pair);              // everything shown today
-  test("an outfit always fills the day's piece and two options", () => {
-    for (let i = 0; i < SPAN; i += 5) for (const mode of ["top", "bottom"]) {
-      const d = dayAt(i), f = A.outfitFor(d, A.colorForDate(d), mode);
-      ok(f.hero && f.hero.label && /^#[0-9a-f]{6}$/i.test(f.hero.hex), "bad hero on " + d.toDateString());
-      ok(f.pair.length >= 1, "no options on " + d.toDateString());
-      for (const p of f.pair) ok(p && p.label && /^#[0-9a-f]{6}$/i.test(p.hex), "bad option on " + d.toDateString());
-      eq(f.role === "top" ? "bottom" : "top", f.pairRole, "option role contradicts the hero role");
-    }
+  group("the stadium rule · Purple the day after the Vikings win");
+  test("the score is read from our own origin, never a remote API", () => {
+    //  A browser cannot call a public sports scoreboard: those endpoints answer curl,
+    //  which sends no Origin header, but refuse a page, which always sends one. A remote
+    //  URL here would look perfectly plausible and silently never work. So forbid it.
+    const src = [...doc.querySelectorAll("script")].map(s => s.textContent || "").join(" ");
+    ok(!/espn\.com/i.test(src), "a remote score URL is back in the page");
+    ok(src.indexOf("nfl.json") >= 0, "the page should read nfl.json from its own origin");
   });
-  test("the two options are always different from each other", () => {
-    for (let i = 0; i < SPAN; i++) for (const mode of ["top", "bottom"]) {
-      const d = dayAt(i), f = A.outfitFor(d, A.colorForDate(d), mode);
-      if (f.mono) continue;
-      eq(f.pair.length, 2, "expected two options on " + d.toDateString());
-      ok(f.pair[0].label !== f.pair[1].label, "both options were " + f.pair[0].label + " on " + d.toDateString());
-    }
+  test("only a win, and only whose game was yesterday", () => {
+    const d = new Date(2026, 10, 16);                       // the Monday after
+    eq(A.stadiumFor(d, { gameYmd: "2026-11-15", won: true, opponent: "Green Bay Packers" }), "beat the Packers");
+    eq(A.stadiumFor(d, { gameYmd: "2026-11-15", won: false, opponent: "Green Bay Packers" }), null, "a loss is not a win");
+    eq(A.stadiumFor(d, { gameYmd: "2026-11-08", won: true, opponent: "Chicago Bears" }), null, "last week does not count");
+    eq(A.stadiumFor(d, null), null, "no score, no claim");
+    eq(A.stadiumFor(d, { gameYmd: "2026-11-15", won: true, opponent: "" }), "won", "an unknown opponent still counts");
   });
-  test("the day's color lands on the piece the mode names", () => {
-    for (let i = 0; i < SPAN; i += 5) {
-      const d = dayAt(i), c = A.colorForDate(d).shade.name;
-      eq(A.outfitFor(d, A.colorForDate(d), "top").hero.label, c, "top mode on " + d.toDateString());
-      eq(A.outfitFor(d, A.colorForDate(d), "bottom").hero.label, c, "bottom mode on " + d.toDateString());
-    }
+  test("every win of the season colours its day after, past and future", () => {
+    const rec = { wins: [{ ymd: "2026-09-13", opponent: "Green Bay Packers" },
+                         { ymd: "2026-11-15", opponent: "Green Bay Packers" }] };
+    eq(A.stadiumFor(new Date(2026, 8, 14), rec), "beat the Packers", "a September win still counts in November");
+    eq(A.stadiumFor(new Date(2026, 10, 16), rec), "beat the Packers");
+    eq(A.stadiumFor(new Date(2026, 10, 15), rec), null, "game day itself is not the day after");
+    eq(A.stadiumFor(new Date(2026, 10, 17), rec), null, "two days after is not the day after");
+    eq(A.winsOf({ gameYmd: "2026-11-15", won: true, opponent: "X" }).length, 1, "the old one-game file is still read");
+    eq(A.winsOf({ gameYmd: "2026-11-15", won: false }).length, 0);
   });
-  test("trouser options are always something people own", () => {
+  test("a win settled today shows on tomorrow this evening, and past days hold", () => {
+    const saved = localStorage.getItem("toga.region");
+    localStorage.setItem("toga.region", "554");
+    const iso = x => x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0") + "-" + String(x.getDate()).padStart(2, "0");
+    //  Plain days only: a holiday or theme week outranks the rule by design.
+    const plainAfter = from => { for (let i = 0; i < 60; i++) {
+      const g = new Date(from.getFullYear(), from.getMonth(), from.getDate() + i);
+      const n = new Date(g.getFullYear(), g.getMonth(), g.getDate() + 1), r = A.colorForDate(n);
+      if (!r.holiday && !r.theme) return [g, n]; } };
+    localStorage.removeItem("toga.nfl");
+    A.applyScore({ wins: [], region: "554", at: Date.now() });
+    const [gameDay, dayAfter] = plainAfter(new Date());
+    const [oldGame, oldAfter] = plainAfter(new Date(2026, 8, 12));
+    A.applyScore({ wins: [{ ymd: iso(oldGame), opponent: "Chicago Bears" }, { ymd: iso(gameDay), opponent: "Chicago Bears" }],
+                   region: "554", at: Date.now() });
+    eq(A.colorForDate(dayAfter).shade.name, "Purple", "the day after a just-settled win");
+    eq(A.colorForDate(oldAfter).shade.name, "Purple", "a past day after a win holds its Purple");
+    const next = new Date(dayAfter.getFullYear(), dayAfter.getMonth(), dayAfter.getDate() + 1);
+    const nr = A.colorForDate(next);
+    ok(nr.holiday || nr.shade.name !== "Purple", "the day after a Purple win day should not repeat Purple");
+    localStorage.removeItem("toga.nfl");
+    A.applyScore({ wins: [], region: "554", at: Date.now() });
+    localStorage.removeItem("toga.nfl");
+    if (saved) localStorage.setItem("toga.region", saved); else localStorage.removeItem("toga.region");
+  });
+  test("it is scoped to Minnesota, so no other Toga changes", () => {
+    const saved = localStorage.getItem("toga.region");
+    for (const [p, want] of [["554", true], ["550", true], ["567", true], ["540", false], ["600", false], ["100", false]]) {
+      localStorage.setItem("toga.region", p);
+      eq(A.isMinnesota(), want, "prefix " + p);
+    }
+    localStorage.removeItem("toga.region");
+    eq(A.isMinnesota(), false, "no region set");
+    if (saved) localStorage.setItem("toga.region", saved);
+  });
+  test("with no stored score, nothing is claimed about the Vikings", () => {
+    // The results come from a fetch at runtime and are never baked into the page. A clean
+    // install must therefore say nothing at all, on any date.
+    localStorage.setItem("toga.region", "554");
+    localStorage.removeItem("toga.nfl");
+    const r = A.rawColorFor(new Date(), { theme: null, wx: null, weekend: false });
+    ok(!r.vikings, "claimed a Vikings result with no score stored");
+  });
+  test("a score arriving after the page drew takes effect without a reload", () => {
+    //  The month grid renders before nfl.json arrives. Without dropping the cache, the day is
+    //  computed without the win and keeps that colour - the egg silently never appears.
+    const saved = localStorage.getItem("toga.region");
+    localStorage.setItem("toga.region", "554");
+    const d = new Date(2026, 10, 16);
+    A.colorForDate(d);                                   // drawn without the win, so cached
+    A.applyScore({ gameYmd: "2026-11-15", won: true, opponent: "Chicago Bears",
+                   region: "554", checked: "2026-11-16" });
+    eq(A.colorForDate(d).shade.name, "Purple",
+       "the day must recompute once the score lands, not keep the cached colour");
+    localStorage.removeItem("toga.nfl");
+    if (saved) localStorage.setItem("toga.region", saved); else localStorage.removeItem("toga.region");
+  });
+  test("a win outranks theme weeks and holiday weeks, but not a single-day holiday", () => {
+    const iso = x => x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0") + "-" + String(x.getDate()).padStart(2, "0");
+    const saved = localStorage.getItem("toga.region");
+    localStorage.setItem("toga.region", "554");
+    const setWin = (d, on) => { const y = new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1);
+      localStorage.setItem("toga.nfl", JSON.stringify({ wins: on ? [{ ymd: iso(y), opponent: "Chicago Bears" }] : [], region: "554" })); };
+    const ctx = { theme: null, wx: null, weekend: false };
+    let d = new Date(2026, 5, 10);
+    setWin(d, false);
+    while (A.rawColorFor(d, ctx).holiday) d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
+    setWin(d, true);
+    const plain = A.rawColorFor(d, ctx);
+    eq(plain.shade.name, "Purple", "a win should force Purple");
+    ok(plain.stadium === true && plain.vikings, "marked for the no-repeat rule, and said");
+    const themed = A.rawColorFor(d, { theme: { name: "Jewel Tone Week" }, wx: null, weekend: false });
+    eq(themed.shade.name, "Purple", "a win outranks a theme week");
+    setWin(d, false);
+    const lost = A.rawColorFor(d, ctx);
+    ok(!lost.vikings && !lost.stadium, "no win, no claim");
+    // a week-long holiday gives up one day to the win
+    const wk = A.HOLIDAYS.find(h => h.range), wd = new Date(2026, wk.range.from[0] - 1, wk.range.from[1]);
+    setWin(wd, false);
+    ok(A.rawColorFor(wd, ctx).holiday, wk.name + " should hold without a win");
+    setWin(wd, true);
+    const inWeek = A.rawColorFor(wd, ctx);
+    eq(inWeek.shade.name, "Purple", "a win outranks " + wk.name);
+    ok(!inWeek.holiday, "and the day is no longer presented as the holiday");
+    // a single-day holiday keeps its day
+    const one = A.HOLIDAYS.find(h => h.when), sd = new Date(2026, one.when[0] - 1, one.when[1]);
+    setWin(sd, true);
+    const single = A.rawColorFor(sd, ctx);
+    ok(single.holiday && single.holiday.name === one.name && !single.stadium, one.name + " should keep its day");
+    localStorage.removeItem("toga.nfl");
+    if (saved) localStorage.setItem("toga.region", saved); else localStorage.removeItem("toga.region");
+  });
+  group("outfit · one colour, worn your way");
+  const hexOK = h => /^#[0-9a-f]{6}$/i.test(h || "");
+  const fitOn = i => { const d = dayAt(i), r = A.colorForDate(d); return [A.outfitFor(r), r, d]; };
+  test("the day's colour goes on the top, and nothing is suggested below it", () => {
     for (let i = 0; i < SPAN; i++) {
-      const d = dayAt(i), f = A.outfitFor(d, A.colorForDate(d), "top");
-      for (const p of f.pair) ok(trousers.has(p.label) || A.PANTS_OK.includes(p.label), p.label + " trousers on " + d.toDateString());
+      const [f, r, d] = fitOn(i);
+      eq(f.hero.label, r.shade.name, "the top is not the day's colour on " + d.toDateString());
+      ok(hexOK(f.hero.hex) && f.hero.alias, "bad piece on " + d.toDateString());
+      ok(!f.bottom, "a piece below is still being suggested on " + d.toDateString());
     }
   });
-  test("never two loud pieces — in either option", () => {
-    for (let i = 0; i < SPAN; i++) for (const mode of ["top", "bottom"]) {
-      const d = dayAt(i), r = A.colorForDate(d), f = A.outfitFor(d, r, mode);
-      if (A.isQuiet(r.shade.name)) continue;
-      // trousers are all behaved by construction, so only the top is held to the quiet rule
-      const onBottoms = f.pairRole === "bottom";
-      for (const p of f.pair) ok(onBottoms ? (A.isQuiet(p.label) || trousers.has(p.label)) : A.isQuiet(p.label),
-        r.shade.name + " got loud " + f.pairRole + " option " + p.label + " on " + d.toDateString());
-    }
-  });
-  test("trouser options aren't two of the same register where a choice exists", () => {
-    // the second option should read as a genuinely different suggestion, not a synonym
-    let mixed = 0, same = 0;
-    for (let i = 0; i < SPAN; i++) {
-      const f = A.outfitFor(dayAt(i), A.colorForDate(dayAt(i)), "top");
-      const reg = f.pair.map(p => A.BOTTOMS.find(b => b.label === p.label)?.neutral);
-      if (reg.some(r => r === undefined)) continue;
-      reg[0] === reg[1] ? same++ : mixed++;
-    }
-    ok(mixed > 0, "never produced a mixed-register pair in two years");
-    ok(same / (same + mixed) < 0.85, "options are same-register " + Math.round(100 * same / (same + mixed)) + "% of the time");
+  test("nothing anywhere suggests trousers", () => {
+    // The trouser palette is gone: no second garment, no shade list for it, no copy about
+    // what to wear below. One colour drops into whatever the person already wears.
+    ok(!A.BOTTOMS, "the trouser palette is still published");
+    A.renderHero(new Date(2026, 8, 21));
+    eq(doc.querySelectorAll("#heroPair .garment").length, 1, "more than one garment in the hero");
+    const words = doc.body.innerText;
+    for (const word of ["down below", "trouser", "pants", "chinos", "slacks"])
+      ok(!new RegExp(word, "i").test(words), "the page still talks about the bottom half: '" + word + "'");
   });
   test("no shade list suggests denim (office dress codes ban it)", () => {
     const banned = /denim|jean|indigo|dark wash/i;
-    const lists = A.PALETTE.map(c => [c.label, c.qualifies]).concat(A.BOTTOMS.map(b => [b.label, b.alias]));
-    for (const [name, text] of lists) ok(!banned.test(text), name + " suggests denim: " + text);
+    for (const c of A.PALETTE) ok(!banned.test(c.qualifies), c.label + " suggests denim: " + c.qualifies);
     ok(!banned.test(doc.body.innerText), "the word denim appears on screen");
   });
-  test("the day's own color is never offered as the accompanying piece", () => {
-    for (let i = 0; i < SPAN; i++) for (const mode of ["top", "bottom"]) {
-      const d = dayAt(i), f = A.outfitFor(d, A.colorForDate(d), mode);
-      if (f.mono) continue;
-      for (const p of f.pair) ok(p.label !== f.hero.label, p.label + " offered alongside itself on " + d.toDateString());
-    }
-  });
-  test("Monochrome Week is the same color top and toe", () => {
+  test("Monochrome Week is still the same colour top and toe", () => {
     let seen = 0;
     for (let i = 0; i < SPAN; i++) {
-      const d = dayAt(i), r = A.colorForDate(d);
+      const [f, r] = fitOn(i);
       if (!r.theme || r.theme.name !== "Monochrome Week") continue;
       seen++;
-      const f = A.outfitFor(d, r, "top");
-      ok(f.mono, "not flagged monochrome on " + d.toDateString());
-      eq(f.hero.label, r.shade.name);
+      ok(f.mono && f.note.includes(r.shade.name), "Monochrome Week not honoured on " + r.shade.name);
     }
     ok(seen > 0, "never found a Monochrome Week to test");
   });
-  test("an implausible trouser color always offers a way out", () => {
-    for (let i = 0; i < SPAN; i++) {
-      const d = dayAt(i), c = A.colorForDate(d).shade.name;
-      const plausible = trousers.has(c) || A.PANTS_OK.includes(c);
-      const note = A.outfitFor(d, A.colorForDate(d), "bottom").note;
-      if (plausible) ok(!/big ask/.test(note), c + " is wearable but got the caveat on " + d.toDateString());
-      else ok(/big ask/.test(note), c + " trousers got no caveat on " + d.toDateString());
+  test("the line leaves the rest of the outfit to the reader", () => {
+    for (let i = 0; i < SPAN; i += 5) {
+      const [f] = fitOn(i), plain = f.note.replace(/<\/?b>/g, "");
+      if (f.mono) { ok(f.note.includes(f.hero.label), "the monochrome line does not name the colour"); continue; }
+      ok(/accent/.test(plain), "no accent line on " + plain);
+      ok(/yours/.test(plain), "nothing says the rest is theirs: " + plain);
+      ok(!/trouser|bottom|below/i.test(plain), "the note still mentions a bottom half: " + plain);
     }
   });
-  test("the outfit doesn't change during the day", () => {
-    const sig = f => f.hero.label + "/" + f.pair.map(p => p.label).join("+");
-    for (let i = 0; i < SPAN; i += 5) for (const mode of ["top", "bottom"]) {
-      const d = dayAt(i), late = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 22, 10);
-      eq(sig(A.outfitFor(d, A.colorForDate(d), mode)), sig(A.outfitFor(late, A.colorForDate(late), mode)),
-         "outfit drifted on " + d.toDateString());
+  test("the card never changes during the day", () => {
+    for (let i = 0; i < SPAN; i += 5) {
+      const [f, , d] = fitOn(i), late = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 22, 10);
+      eq(A.outfitFor(A.colorForDate(late)).note, f.note, "the card drifted on " + d.toDateString());
     }
   });
-  test("every note names a piece that is actually shown", () => {
-    for (let i = 0; i < SPAN; i += 5) for (const mode of ["top", "bottom"]) {
-      const d = dayAt(i), f = A.outfitFor(d, A.colorForDate(d), mode);
-      const plain = f.note.replace(/<\/?b>/g, "");
-      ok(pieces(f).some(p => plain.includes(p.label)), "note names nothing shown: " + plain);
+  test("nothing about wardrobes is left on the page", () => {
+    // The drawer is gone: no sheet, no link, no chips, and no second version of the card's
+    // line that depended on it. outfitFor reads no storage at all now.
+    ok(!A.getOwn && !A.OWN_KEY, "the drawer is still published to the test surface");
+    eq(doc.getElementById("drawer"), null, "the drawer sheet is still in the page");
+    ok(!/tops you own|what you own|which tops/i.test(doc.body.innerText), "the page still asks about a wardrobe");
+    ok(!doc.querySelector("[data-kind], #drawerBtn, #drawerTitle"), "a piece of the drawer is still on the page");
+    for (const c of A.PALETTE) {
+      const note = A.outfitFor({ shade: { name: c.label, hex: c.hex }, family: c, theme: null }).note;
+      ok(/accent/i.test(note) && /yours/i.test(note), c.label + " lost its accent line: " + note);
     }
+  });
+
+  group("outfit · the patterned top");
+  const hueOf = hex => { const [r, g, b] = A.hexRGB(hex).map(v => v / 255), mx = Math.max(r, g, b), d = mx - Math.min(r, g, b);
+    if (d < 0.04) return null;
+    return ((mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4) * 60 + 360) % 360; };
+  test("every colour's four shades are distinct and stay in its own family", () => {
+    for (const c of A.PALETTE) {
+      const s = A.shadesOf(c.hex), h0 = hueOf(c.hex);
+      eq(s[0].toLowerCase(), c.hex.toLowerCase(), "the day's own colour should lead");
+      eq(new Set(s.map(x => x.toLowerCase())).size, 4, c.label + " shades are not distinct: " + s.join(" "));
+      for (const x of s) {
+        ok(hexOK(x), c.label + " produced " + x);
+        const h = hueOf(x);
+        if (h0 === null) { const v = A.hexRGB(x); ok(Math.max(...v) - Math.min(...v) < 40, "a shade of " + c.label + " picked up a colour: " + x); continue; }
+        if (h === null) continue;
+        const dh = Math.abs(h - h0);
+        ok(Math.min(dh, 360 - dh) <= 14, "a shade of " + c.label + " drifted " + Math.round(Math.min(dh, 360 - dh)) + " degrees: " + x);
+      }
+    }
+  });
+  test("the top's pattern is drawn only from those shades, on the day's colour", () => {
+    for (const c of A.PALETTE) for (let i = 0; i < 40; i++) {
+      const p = A.topPattern(dayAt(i), c.hex, false);
+      const used = [...p.svg.matchAll(/(?:fill|stroke)="(#[0-9a-f]{6})"/gi)].map(m => m[1].toLowerCase());
+      eq(used[0], c.hex.toLowerCase(), p.kind + " is not grounded in " + c.label);
+      ok(new Set(used).size >= 2, p.kind + " on " + c.label + " is one flat colour");
+      for (const u of used) ok(p.shades.map(x => x.toLowerCase()).includes(u), p.kind + " uses a colour outside " + c.label + ": " + u);
+    }
+  });
+  test("the weave changes from day to day, holds through the day, and a flannel day is plaid", () => {
+    const hex = A.byLabel("Blue").hex, kinds = new Set();
+    for (let i = 0; i < 120; i++) {
+      const d = dayAt(i), late = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 22, 10), k = A.topPattern(d, hex, false).kind;
+      eq(A.topPattern(late, hex, false).kind, k, "the weave drifted on " + d.toDateString());
+      kinds.add(k);
+    }
+    eq(kinds.size, A.TOP_KINDS.length, "only saw " + [...kinds].join(", "));
+    eq(A.topPattern(dayAt(3), hex, true).kind, "plaid");
   });
 
   // ---------------------------------------------------------------- region
@@ -740,6 +902,11 @@ function run() {
   }
 
   // ---------------------------------------------------------------- report
+  report();
+  checkVersion();
+}
+
+function report() {
   const failed = res.filter(r => !r.ok);
   const ms = Math.round(performance.now() - t0);
   const banner = document.getElementById("banner");
@@ -751,6 +918,23 @@ function run() {
   document.title = (failed.length ? "✗ " + failed.length + "/" + res.length : "✓ " + res.length) + " · Toga tests";
   window.__toga = { passed: res.length - failed.length, failed: failed.length, total: res.length, ms,
                     failures: failed.map(f => f.suite + " › " + f.name + ": " + f.err) };
+}
+
+// The one check that needs the network: the number on screen must be the cache name, or it
+// stops meaning "the build my browser cached" — which is the whole reason it is visible.
+async function checkVersion() {
+  const app = frame.contentWindow;
+  let good = false, note = "";
+  try {
+    const txt = await (await fetch("sw.js", { cache: "no-store" })).text();
+    const m = (txt.match(/VERSION\s*=\s*"([^"]+)"/) || [])[1];
+    const shown = app.TOGA && app.TOGA.VERSION;
+    good = !!m && m === shown;
+    note = good ? "" : "sw.js says " + m + ", the page shows " + shown;
+  } catch (e) { note = "could not read sw.js: " + e; }
+  res.push({ suite: "brand", name: "the shown build number is the service worker's cache name", ok: good, err: note });
+  report();
+  window.__togaDone = true;
 }
 </script>
 </body>

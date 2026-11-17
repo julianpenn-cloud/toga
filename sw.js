@@ -1,8 +1,9 @@
 // Toga service worker — the page is pure date-math, so it works fully offline.
 // Strategy: precache the shell; network-first for same-origin (so updates land),
 // falling back to cache when offline. Weather API calls are never cached.
-const VERSION = "toga-v28";
-const SHELL = ["./", "./index.html", "./regions.js", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
+const VERSION = "v29";
+const SHELL = ["./", "./index.html", "./regions.js", "./manifest.webmanifest",
+  "./icon-192.png", "./icon-512.png", "./nfl.json"];
 
 self.addEventListener("install", e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
